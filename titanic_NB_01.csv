@@ -1,0 +1,75 @@
+# 5 November 2020
+# Working on the Titanic dataset on kaggle.
+# https://www.kaggle.com/c/titanic/overview
+# Working with Naive Bayes classifier, doing it in R with just a few variables to see how well it does. 
+# Will try it with more thorough data cleaning later.
+# Score: 0.76555
+
+# Work with the training data.
+traindata <- read.csv("/Users/fds/Downloads/titanic/train.csv",header=TRUE,stringsAsFactors=FALSE)
+# Use a separate file for naive bayes.
+train_nb = traindata
+
+# Two bins for age: 18 or less is Child, 19 or older is Adult.
+# Also deal with some data issues that didn't change single digit ages.
+# Will investigate more next time.
+train_nb$Age[train_nb$Age>18] <- "Adult"
+train_nb$Age[train_nb$Age<=18] <- "Child"
+train_nb$Age[train_nb$Age=="2"] <- "Child"
+train_nb$Age[train_nb$Age=="4"] <- "Child"
+train_nb$Age[train_nb$Age=="4"] <- "Child"
+train_nb$Age[train_nb$Age=="8"] <- "Child"
+train_nb$Age[train_nb$Age=="3"] <- "Child"
+train_nb$Age[train_nb$Age=="7"] <- "Child"
+train_nb$Age[train_nb$Age=="5"] <- "Child"
+train_nb$Age[train_nb$Age=="9"] <- "Child"
+train_nb$Age[train_nb$Age=="6"] <- "Child"
+
+# Get rid of the columns we're not going to use.
+train_nb$PassengerId = NULL; train_nb$Pclass = NULL; train_nb$Name = NULL; train_nb$SibSp = NULL; train_nb$Parch = NULL; train_nb$Ticket = NULL; train_nb$Cabin = NULL; train_nb$Embarked_S = NULL; train_nb$Embarked_C = NULL
+
+# Fares greater than 10 were Hi, 10 or less were Lo.
+# Again deal wth some data issues that I will investigate later.
+train_nb$Fare[as.numeric(train_nb$Fare)<=10] <- "Lo"
+train_nb$Fare[as.numeric(train_nb$Fare)>10] <- "Hi"
+train_nb$Fare[is.na(train_nb$Fare)] <- "Hi" 
+
+# Make Survived a factor.
+train_nb$Survived <- as.factor(train_nb$Survived)
+
+# Create the model.
+Naive_Bayes_Model=naiveBayes(Survived ~., data= train_nb)
+
+
+# Now do the same processing for the test data.
+testdata <- read.csv("/Users/fds/Downloads/titanic/test.csv",header=TRUE,stringsAsFactors=FALSE)
+testnb = testdata
+testnb$Age[testnb$Age>18] <- "Adult"
+testnb$Age[testnb$Age<=18] <- "Child"
+testnb$Age[testnb$Age=="2"] <- "Child"
+testnb$Age[testnb$Age=="4"] <- "Child"
+testnb$Age[testnb$Age=="4"] <- "Child"
+testnb$Age[testnb$Age=="8"] <- "Child"
+testnb$Age[testnb$Age=="3"] <- "Child"
+testnb$Age[testnb$Age=="7"] <- "Child"
+testnb$Age[testnb$Age=="5"] <- "Child"
+testnb$Age[testnb$Age=="9"] <- "Child"
+testnb$Age[testnb$Age=="6"] <- "Child"
+testnb$PassengerId = NULL; testnb$Pclass = NULL; testnb$Name = NULL; testnb$SibSp = NULL; testnb$Parch = NULL; testnb$Ticket = NULL; testnb$Cabin = NULL; testnb$Embarked_S = NULL; testnb$Embarked_C = NULL
+testnb$Fare[as.numeric(testnb$Fare)<=10] <- "Lo"
+testnb$Fare[as.numeric(testnb$Fare)>10] <- "Hi"
+testnb$Fare[is.na(testnb$Fare)] <- "Hi" 
+testnb$Sex[testnb$Sex=="female"] <- 1
+testnb$Sex[testnb$Sex=="male"] <- 0
+testnb$Age[is.na(testnb$Age)] <- "Adult"
+
+# Apply the model to the testing data.
+testdata$Survived <- predict(Naive_Bayes_Model, newdata = testnb) 
+
+# Create a file formatted the way kaggle requires.
+submit <- cbind(testdata[,1],testdata[,12])
+colnames(submit) <- c("PassengerID","Survived")
+write.table(submit, "titanic_NB_submit.csv", row.names=FALSE, col.names=TRUE, sep=",")
+
+# When submitted, got 0.76555
+
