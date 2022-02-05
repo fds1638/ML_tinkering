@@ -1,0 +1,53 @@
+// This script does a logistic regression on the Titanic dataset.
+
+// Import frequently used types and import the data.
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+val traindata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/train.csv")
+val testdata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/test.csv")
+
+// In order to do data munging and feature engineering, combine the training and test data.
+// Give the test data an extra Survived column, coded as -1, so it has the same columns as training data.
+// Sort the columns the same way for both data sets so that they can be unioned.
+val sortedCols = traindata.columns.sorted.map(str => col(str))
+val alldata = testdata.withColumn("Survived",lit("-1")).select(sortedCols: _*).union(traindata.select(sortedCols:_*))
+
+// For columns with nulls, fill in the nulls.
+// For age, calculated the medians grouped by Sex and Pclass.
+// For Fare, since there is only one missing, just use the average fare.
+// For Cabin, make the unknown cabins equal U.
+// For Embarked, the two unknowns are given as embarked in Cherbourg since their fares most closely match those of persons from that city.
+val allAgeFilled = alldata.withColumn("AgeFilled",when( col("Age").isNull, when(col("Sex").contains("female"), when(col("Pclass").contains("1"),"36.0").when(col("Pclass").contains("2"),"28.0").otherwise("22.0")  ).otherwise( when(col("Pclass").contains("1"),"42.0").when(col("Pclass").contains("2"),"29.0").otherwise("25.0")    )).otherwise(col("Age"))  )
+val allFareFilled = allAgeFilled.withColumn("FareFilled",when(col("Fare").isNull,33.29).otherwise(col("Fare")))
+val allCabinFilled = allFareFilled.withColumn("CabinFilled",when(col("Cabin").isNull,"U").otherwise(substring(trim(col("Cabin")),0,1)))
+val allEmbarkedFilled = allCabinFilled.withColumn("EmbarkedFilled",when(col("Embarked").isNull,"C").otherwise(col("Embarked")))
+
+// Now start making columns into integer or double columns.
+// Also make Embarked, Pclass, and Cabin into one hot columns.
+val allFamilySize = allEmbarkedFilled.withColumn("FamilySize",col("SibSp").cast(IntegerType)+col("Parch").cast(IntegerType)+1)
+val allSexInt = allFamilySize.withColumn("SexInt",when(col("Sex").contains("female"),1).otherwise(0))
+val allAgeDouble = allSexInt.withColumn("AgeDouble",col("AgeFilled").cast(DoubleType))
+val allFareDouble = allAgeDouble.withColumn("FareDouble",col("FareFilled").cast(DoubleType))
+val allEmbarkedOneHot = allFareDouble.withColumn("Embarked_Q",when(col("Embarked").contains("Q"),1).otherwise(0)).withColumn("Embarked_C",when(col("Embarked").contains("C"),1).otherwise(0)).withColumn("Embarked_S",when(col("Embarked").contains("S"),1).otherwise(0))
+val allEmbarkedOneHot = allFareDouble.withColumn("Embarked_Q",when(col("EmbarkedFilled").contains("Q"),1).otherwise(0)).withColumn("Embarked_C",when(col("EmbarkedFilled").contains("C"),1).otherwise(0)).withColumn("Embarked_S",when(col("EmbarkedFilled").contains("S"),1).otherwise(0))
+val allPclassOneHot = allEmbarkedOneHot.withColumn("Pclass_1",when(col("Pclass").contains("1"),1).otherwise(0)).withColumn("Pclass_2",when(col("Pclass").contains("2"),1).otherwise(0)).withColumn("Pclass_3",when(col("Pclass").contains("3"),1).otherwise(0))
+val allCabinOneHot = allPclassOneHot.withColumn("Cabin_F",when(col("CabinFilled").contains("F"),1).otherwise(0)).withColumn("Cabin_E",when(col("CabinFilled").contains("E"),1).otherwise(0)).withColumn("Cabin_T",when(col("CabinFilled").contains("T"),1).otherwise(0)).withColumn("Cabin_B",when(col("CabinFilled").contains("B"),1).otherwise(0)).withColumn("Cabin_U",when(col("CabinFilled").contains("U"),1).otherwise(0)).withColumn("Cabin_D",when(col("CabinFilled").contains("D"),1).otherwise(0)).withColumn("Cabin_C",when(col("CabinFilled").contains("C"),1).otherwise(0)).withColumn("Cabin_A",when(col("CabinFilled").contains("A"),1).otherwise(0)).withColumn("Cabin_G",when(col("CabinFilled").contains("G"),1).otherwise(0))
+
+// Now we're ready to create the model. 
+// Get a VectorAssembler, create the feature vector from the appropriate columns.
+import org.apache.spark.ml.feature.VectorAssembler
+val assembler = new VectorAssembler().setInputCols(Array("FamilySize","SexInt","AgeDouble","FareDouble","Embarked_Q","Embarked_C","Embarked_S","Cabin_F","Cabin_E","Cabin_T","Cabin_B","Cabin_U","Cabin_D","Cabin_C","Cabin_A","Cabin_G","Pclass_1","Pclass_2","Pclass_3")).setOutputCol("features")
+
+// Pull out the training set and train the model on it.
+val trainWithOneHot = allCabinOneHot.filter(!col("Survived").contains("-"))
+val trainWithFeatures = assembler.transform(trainWithOneHot)
+val trainWithLabels = trainWithFeatures.withColumn("label",when(col("Survived").contains("1"),1).otherwise(0))
+import org.apache.spark.ml.classification.LogisticRegression
+val logRegressor = new LogisticRegression().setMaxIter(1000)
+val model = logRegressor.fit(trainWithLabels)
+
+// Pull out the testing set and use the trained model to make predictions.
+val testWithOneHot = allCabinOneHot.filter(col("Survived").contains("-"))
+val testWithFeatures = assembler.transform(testWithOneHot)
+model.transform(testWithFeatures).select(col("PassengerId"),col("prediction").cast(IntegerType).as("Survived")).coalesce(1).write.option("header","true").csv("LogReg")
+
+// This results in getting 0.76555 of the predictions correct.
