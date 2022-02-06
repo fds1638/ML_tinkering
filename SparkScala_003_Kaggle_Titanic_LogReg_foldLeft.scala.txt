@@ -1,0 +1,83 @@
+// This has no new ML in it, it is basically the same logistic regression as yesterday.
+// The purpose is to practice using foldLeft to automatically generate (most of) the columns that will be used in the classification.
+
+// First some imports.
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+
+// Now two functions using foldLeft. The first one generates one-hot columns for a given column by 
+// going through a list of distinct values for the column in question, and adding resulting columns to the feature column list.
+// The second generates a double column from a string column and adds it to the feature column list.
+def addOneHotToCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = { 
+  import df.sparkSession.implicits._
+  val columns:Array[String] = df.select(col(dfcol)).distinct.rdd.map( r => r.getString(0) ).collect
+  (columns.foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"_"+col, when(acc(dfcol).contains(col),1).otherwise(0))
+   }),
+   columns.foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"_"+col) )  
+  )
+}
+def createDoubleCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = {
+  import df.sparkSession.implicits._
+  (List(dfcol).foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"Double",acc(dfcol).cast(DoubleType))
+   }),
+   List(dfcol).foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"Double") )  
+  )
+}
+
+// From here on everything is similar to the last time, except for the changed calls for generating one-hot and double cols.
+
+// Import the data.
+val traindata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/train.csv")
+val testdata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/test.csv")
+
+// In order to do data munging and feature engineering, combine the training and test data.
+// Give the test data an extra Survived column, coded as -1, so it has the same columns as training data.
+// Sort the columns the same way for both data sets so that they can be unioned.
+val sortedCols = traindata.columns.sorted.map(str => col(str))
+val alldata = testdata.withColumn("Survived",lit("-1")).select(sortedCols: _*).union(traindata.select(sortedCols:_*))
+
+// For columns with nulls, fill in the nulls.
+// For age, calculated the medians grouped by Sex and Pclass.
+// For Fare, since there is only one missing, just use the average fare.
+// For Cabin, make the unknown cabins equal U.
+// For Embarked, the two unknowns are given as embarked in Cherbourg since their fares most closely match those of persons from that city.
+val allAgeFilled = alldata.withColumn("AgeFilled",when( col("Age").isNull, when(col("Sex").contains("female"), when(col("Pclass").contains("1"),"36.0").when(col("Pclass").contains("2"),"28.0").otherwise("22.0")  ).otherwise( when(col("Pclass").contains("1"),"42.0").when(col("Pclass").contains("2"),"29.0").otherwise("25.0")    )).otherwise(col("Age"))  )
+val allFareFilled = allAgeFilled.withColumn("FareFilled",when(col("Fare").isNull,33.29).otherwise(col("Fare")))
+val allCabinFilled = allFareFilled.withColumn("CabinFilled",when(col("Cabin").isNull,"U").otherwise(substring(trim(col("Cabin")),0,1)))
+val allEmbarkedFilled = allCabinFilled.withColumn("EmbarkedFilled",when(col("Embarked").isNull,"C").otherwise(col("Embarked")))
+
+// Now start making columns into integer or double columns.
+// Also make Embarked, Pclass, and Cabin into one hot columns.
+val allFamilySize = allEmbarkedFilled.withColumn("FamilySize",col("SibSp").cast(IntegerType)+col("Parch").cast(IntegerType)+1)
+val allSexInt = allFamilySize.withColumn("SexInt",when(col("Sex").contains("female"),1).otherwise(0))
+
+// Here we use the new functions. Initialize the feature column list with "SexInt", which we have already generated.
+val featureColumnsSexInt:List[String] = List("SexInt")
+val (allAgeDouble,featureColumnsAgeDouble) = createDoubleCol(allSexInt, "AgeFilled", featureColumnsSexInt.toList)
+val (allFareDouble,featureColumnsFareDouble) = createDoubleCol(allAgeDouble, "FareFilled", featureColumnsAgeDouble.toList)
+val (allEmbarkedOneHot, featureColumnsEmbarkedOneHot) = addOneHotToCol(allFareDouble,"EmbarkedFilled",featureColumnsFareDouble.toList)
+val (allPclassOneHot, featureColumnsPclassOneHot) = addOneHotToCol(allEmbarkedOneHot, "Pclass", featureColumnsEmbarkedOneHot.toList)
+val (allCabinOneHot, featureColumnCabinOneHot) = addOneHotToCol(allPclassOneHot, "CabinFilled", featureColumnsPclassOneHot.toList)
+
+// Now we're ready to create the model. 
+// Get a VectorAssembler, create the feature vector from the appropriate columns.
+// Now the columns have been automatically generated.
+import org.apache.spark.ml.feature.VectorAssembler
+val assembler = new VectorAssembler().setInputCols(featureColumnCabinOneHot.toArray).setOutputCol("features")
+
+// Pull out the training set and train the model on it.
+val trainWithOneHot = allCabinOneHot.filter(!col("Survived").contains("-"))
+val trainWithFeatures = assembler.transform(trainWithOneHot)
+val trainWithLabels = trainWithFeatures.withColumn("label",when(col("Survived").contains("1"),1).otherwise(0))
+import org.apache.spark.ml.classification.LogisticRegression
+val logRegressor = new LogisticRegression().setMaxIter(1111)
+val model = logRegressor.fit(trainWithLabels)
+
+// Pull out the testing set and use the trained model to make predictions.
+val testWithOneHot = allCabinOneHot.filter(col("Survived").contains("-"))
+val testWithFeatures = assembler.transform(testWithOneHot)
+model.transform(testWithFeatures).select(col("PassengerId"),col("prediction").cast(IntegerType).as("Survived")).coalesce(1).write.option("header","true").csv("LogReg1111")
+
+// Submitted this and got 0.76315. I'm not sure why it isn't as good as yesterday's. I had fiddled around a bit, so there might be some small error in there. But the purpose was to practice using foldLeft, so I am leaving it as is. 
