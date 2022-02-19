@@ -89,5 +89,7 @@ val model = rf.fit(trainWithFeatures.withColumn("label",when(col("Survived").con
 val testWithOneHot = allCabinOneHot.filter(col("Survived").contains("-"))
 val testWithFeatures = assembler.transform(testWithOneHot)
 
-// Make prediction.
+// Make predictions.
 model.transform(testWithFeatures).select(col("PassengerId"),col("prediction").cast(IntegerType).as("Survived")).coalesce(1).write.option("header","true").csv("RF01")
+
+// This got a 0.77751.
