@@ -1,0 +1,93 @@
+// This is my first Random Forest, so the goal was simply to get a Random Forest to work.
+// In particular, I needed to know what kind of data structure the Random Forest needed.
+// In future I will try to tune the RF parameters better.
+
+// First import a bunch of things, which I copied from somewhere online.
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.ml._
+import org.apache.spark.ml.feature._
+import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.ml.tuning.ParamGridBuilder
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.ml.tuning.CrossValidator
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+
+// Use the methods I used previously for feature engineering on Titanic.
+:paste
+def addOneHotToCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = { 
+  import df.sparkSession.implicits._
+  val columns:Array[String] = df.select(col(dfcol)).distinct.rdd.map( r => r.getString(0) ).collect
+  (columns.foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"_"+col, when(acc(dfcol).contains(col),1).otherwise(0))
+   }),
+   columns.foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"_"+col) )  
+  )
+}
+:paste
+def createDoubleCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = {
+  import df.sparkSession.implicits._
+  (List(dfcol).foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"Double",acc(dfcol).cast(DoubleType))
+   }),
+   List(dfcol).foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"Double") )  
+  )
+}
+
+// Get the  data.
+val traindata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/train.csv")
+val testdata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/test.csv")
+
+// Fill in the missing data, and make the categorical columns into one-hots.
+val sortedCols = traindata.columns.sorted.map(str => col(str))
+val alldata = testdata.withColumn("Survived",lit("-1")).select(sortedCols: _*).union(traindata.select(sortedCols:_*))
+val allAgeFilled = alldata.withColumn("AgeFilled",when( col("Age").isNull, when(col("Sex").contains("female"), when(col("Pclass").contains("1"),"36.0").when(col("Pclass").contains("2"),"28.0").otherwise("22.0")  ).otherwise( when(col("Pclass").contains("1"),"42.0").when(col("Pclass").contains("2"),"29.0").otherwise("25.0")    )).otherwise(col("Age"))  )
+val allFareFilled = allAgeFilled.withColumn("FareFilled",when(col("Fare").isNull,33.29).otherwise(col("Fare")))
+val allCabinFilled = allFareFilled.withColumn("CabinFilled",when(col("Cabin").isNull,"U").otherwise(substring(trim(col("Cabin")),0,1)))
+val allEmbarkedFilled = allCabinFilled.withColumn("EmbarkedFilled",when(col("Embarked").isNull,"C").otherwise(col("Embarked")))
+val allFamilySize = allEmbarkedFilled.withColumn("FamilySize",col("SibSp").cast(IntegerType)+col("Parch").cast(IntegerType)+1)
+val allSexInt = allFamilySize.withColumn("SexInt",when(col("Sex").contains("female"),1).otherwise(0))
+val featureColumnsSexInt:List[String] = List("SexInt")
+val (allAgeDouble,featureColumnsAgeDouble) = createDoubleCol(allSexInt, "AgeFilled", featureColumnsSexInt.toList)
+val (allFareDouble,featureColumnsFareDouble) = createDoubleCol(allAgeDouble, "FareFilled", featureColumnsAgeDouble.toList)
+val (allEmbarkedOneHot, featureColumnsEmbarkedOneHot) = addOneHotToCol(allFareDouble,"EmbarkedFilled",featureColumnsFareDouble.toList)
+val (allPclassOneHot, featureColumnsPclassOneHot) = addOneHotToCol(allEmbarkedOneHot, "Pclass", featureColumnsEmbarkedOneHot.toList)
+val (allCabinOneHot, featureColumnCabinOneHot) = addOneHotToCol(allPclassOneHot, "CabinFilled", featureColumnsPclassOneHot.toList)
+
+// Set up the Random Forest.
+import org.apache.spark.ml.feature.VectorAssembler
+val randomForestClassifier = new RandomForestClassifier()
+val rf = new RandomForestClassifier()
+rf.setLabelCol("label")
+rf.setFeaturesCol("features")
+rf.setNumTrees(10)
+val labelIndexer = new StringIndexer()
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer}
+
+
+val trainWithOneHot = allCabinOneHot.filter(!col("Survived").contains("-"))
+labelIndexer.setInputCol("label").setOutputCol("indexedLabel").fit(trainWithOneHot)
+
+labelIndexer.setInputCol("Survived").setOutputCol("indexedLabel").fit(trainWithOneHot)
+import org.apache.spark.ml.feature.VectorAssembler
+val assembler = new VectorAssembler().setInputCols(featureColumnCabinOneHot.toArray).setOutputCol("features")
+val trainWithFeatures = assembler.transform(trainWithOneHot)
+val featureIndexer = new VectorIndexer().setInputCol("features").setOutputCol("indexedFeatures").setMaxCategories(4).fit(trainWithFeatures)
+
+// Train the RF.
+val model = rf.fit(trainWithFeatures.withColumn("label",when(col("Survived").contains("1"),1).otherwise(0)))
+
+val testWithOneHot = allCabinOneHot.filter(col("Survived").contains("-"))
+val testWithFeatures = assembler.transform(testWithOneHot)
+
+// Make prediction.
+model.transform(testWithFeatures).select(col("PassengerId"),col("prediction").cast(IntegerType).as("Survived")).coalesce(1).write.option("header","true").csv("RF01")
