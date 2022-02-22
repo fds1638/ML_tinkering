@@ -1,0 +1,89 @@
+// The new thing here is the evaluator at the end.
+
+// Import a bunch of stuff like we did before.
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.ml._
+import org.apache.spark.ml.feature._
+import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.SaveMode
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.ml.tuning.ParamGridBuilder
+import org.apache.spark.ml.param.ParamMap
+import org.apache.spark.ml.tuning.CrossValidator
+import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
+import org.apache.spark.mllib.evaluation.MulticlassMetrics
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+
+// A couple of methods to help with feature engineering.
+:paste
+def addOneHotToCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = { 
+  import df.sparkSession.implicits._
+  val columns:Array[String] = df.select(col(dfcol)).distinct.rdd.map( r => r.getString(0) ).collect
+  (columns.foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"_"+col, when(acc(dfcol).contains(col),1).otherwise(0))
+   }),
+   columns.foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"_"+col) )  
+  )
+}
+:paste
+def createDoubleCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = {
+  import df.sparkSession.implicits._
+  (List(dfcol).foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"Double",acc(dfcol).cast(DoubleType))
+   }),
+   List(dfcol).foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"Double") )  
+  )
+}
+
+// Read the data in and transform it to be ready for the ML analysis.
+val traindata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/train.csv")
+val testdata = spark.read.option("header","true").csv("/Users/fds/Downloads/titanic/test.csv")
+val sortedCols = traindata.columns.sorted.map(str => col(str))
+val alldata = testdata.withColumn("Survived",lit("-1")).select(sortedCols: _*).union(traindata.select(sortedCols:_*))
+val allAgeFilled = alldata.withColumn("AgeFilled",when( col("Age").isNull, when(col("Sex").contains("female"), when(col("Pclass").contains("1"),"36.0").when(col("Pclass").contains("2"),"28.0").otherwise("22.0")  ).otherwise( when(col("Pclass").contains("1"),"42.0").when(col("Pclass").contains("2"),"29.0").otherwise("25.0")    )).otherwise(col("Age"))  )
+val allFareFilled = allAgeFilled.withColumn("FareFilled",when(col("Fare").isNull,33.29).otherwise(col("Fare")))
+val allCabinFilled = allFareFilled.withColumn("CabinFilled",when(col("Cabin").isNull,"U").otherwise(substring(trim(col("Cabin")),0,1)))
+val allEmbarkedFilled = allCabinFilled.withColumn("EmbarkedFilled",when(col("Embarked").isNull,"C").otherwise(col("Embarked")))
+val allFamilySize = allEmbarkedFilled.withColumn("FamilySize",col("SibSp").cast(IntegerType)+col("Parch").cast(IntegerType)+1)
+val allSexInt = allFamilySize.withColumn("SexInt",when(col("Sex").contains("female"),1).otherwise(0))
+val featureColumnsSexInt:List[String] = List("SexInt")
+val (allAgeDouble,featureColumnsAgeDouble) = createDoubleCol(allSexInt, "AgeFilled", featureColumnsSexInt.toList)
+val (allFareDouble,featureColumnsFareDouble) = createDoubleCol(allAgeDouble, "FareFilled", featureColumnsAgeDouble.toList)
+val (allEmbarkedOneHot, featureColumnsEmbarkedOneHot) = addOneHotToCol(allFareDouble,"EmbarkedFilled",featureColumnsFareDouble.toList)
+val (allPclassOneHot, featureColumnsPclassOneHot) = addOneHotToCol(allEmbarkedOneHot, "Pclass", featureColumnsEmbarkedOneHot.toList)
+val (allCabinOneHot, featureColumnCabinOneHot) = addOneHotToCol(allPclassOneHot, "CabinFilled", featureColumnsPclassOneHot.toList)
+import org.apache.spark.ml.feature.VectorAssembler
+val randomForestClassifier = new RandomForestClassifier()
+val rf = new RandomForestClassifier().setLabelCol("label").setFeaturesCol("features").setNumTrees(10)
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.classification.{RandomForestClassificationModel, RandomForestClassifier}
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+import org.apache.spark.ml.feature.{IndexToString, StringIndexer, VectorIndexer}
+val trainWithOneHot = allCabinOneHot.filter(!col("Survived").contains("-"))
+val testWithOneHot = allCabinOneHot.filter(col("Survived").contains("-"))
+
+// The new stuff for this time:
+// Use the VectorAssembler to get things in shape. Create a paramGrid and a pipeline which allow evaluation. Train the model and predict.
+import org.apache.spark.ml.feature.VectorAssembler
+val assembler = new VectorAssembler().setInputCols(featureColumnCabinOneHot.toArray).setOutputCol("features")
+var paramGrid = new ParamGridBuilder().addGrid(rf.numTrees, Array(20, 30, 40)).addGrid(rf.maxDepth, Array(1, 2, 3, 4, 5)).build()
+val pipeline = new Pipeline().setStages(Array(rf)) 
+val trainWithFeatures = assembler.transform(trainWithOneHot)
+val cv = new CrossValidator()
+val cvModel = cv.setEstimator(pipeline).setEstimatorParamMaps(paramGrid).setEvaluator(new BinaryClassificationEvaluator).setNumFolds(3).fit(trainWithFeatures.withColumn("label",when(col("Survived").contains("1"),1).otherwise(0)))
+val testWithFeatures = assembler.transform(testWithOneHot)
+cvModel.transform(testWithFeatures).select(col("PassengerId"),col("prediction").cast(IntegerType).as("Survived")).coalesce(1).write.option("header","true").csv("RF28")
+
+// NEW PART
+// Let's get an evaluator and see the area under the ROC and the PR curves.
+val evaluator = new BinaryClassificationEvaluator()
+evaluator.setMetricName("areaUnderPR").evaluate(cvModel.transform(trainWithFeatures).withColumn("label",col("Survived").cast(DoubleType)))
+evaluator.setMetricName("areaUnderROC").evaluate(cvModel.transform(trainWithFeatures).withColumn("label",col("Survived").cast(DoubleType)))
+// I got:
+// auROC: 0.9015541281862824
+// auPR : 0.8941649763902789
+
+// My best score so far is 0.78229.
