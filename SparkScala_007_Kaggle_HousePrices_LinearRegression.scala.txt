@@ -1,0 +1,97 @@
+// This is a new Kaggle Problem, House Prices - Advanced Regression Techniques
+// https://www.kaggle.com/c/house-prices-advanced-regression-techniques
+// But there are no new techniques here.
+// I just applied what I already knew about Linear Regression to a new problem.
+// Made a bunch of columns one-hot, and made a bunch of other columns DoubleType rather than String.
+// This got me a score of 0.18216, which will have to be good enough for a first try.
+// To come: regularization and better feature engineering (to remove features with high correlation).
+
+val traindata = spark.read.option("header","true").csv("/Users/fds/Downloads/house-prices-advanced-regression-techniques/train.csv")
+val testdata = spark.read.option("header","true").csv("/Users/fds/Downloads/house-prices-advanced-regression-techniques/test.csv")
+val alldata = traindata.union(testdata.withColumn("SalePrice",lit("test")))
+
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+import org.apache.spark.ml.feature.VectorAssembler
+import org.apache.spark.ml.regression.LinearRegression
+import org.apache.spark.sql.types.{StructType, StructField, StringType, IntegerType, ArrayType, DoubleType}
+
+:paste
+def addOneHotToCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = { 
+  import df.sparkSession.implicits._
+  val columns:Array[String] = df.select(col(dfcol)).distinct.rdd.map( r => r.getString(0) ).collect
+  (columns.foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"_"+col, when(acc(dfcol).contains(col),1).otherwise(0))
+   }),
+   columns.foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"_"+col) )  
+  )
+}
+:paste
+def createDoubleCol(df: DataFrame, dfcol:String, outcols:List[String]): (DataFrame, List[String]) = {
+  import df.sparkSession.implicits._
+  (List(dfcol).foldLeft(df)((acc, col) => {
+    acc.withColumn(dfcol+"Double",acc(dfcol).cast(DoubleType))
+   }),
+   List(dfcol).foldLeft(outcols)( (acc,col) => acc:::List(dfcol+"Double") )  
+  )
+}
+
+val featColsNull:List[String] = List()
+val (alldataOverallQual,featColOverallQual) = createDoubleCol(alldata, "OverallQual", featColsNull.toList)
+val (alldataOverallCond,featColOverallCond) = createDoubleCol(alldataOverallQual, "OverallCond", featColOverallQual.toList)
+val (alldataMSZoningOneHot, featColsMSZoningOneHot) = addOneHotToCol(alldataOverallCond, "MSZoning", featColOverallCond.toList)
+val (alldataStreetOneHot, featColsStreetOneHot) = addOneHotToCol(alldataMSZoningOneHot, "Street", featColsMSZoningOneHot.toList)
+val (alldataAlleyOneHot, featColsAlleyOneHot) = addOneHotToCol(alldataStreetOneHot, "Alley", featColsStreetOneHot.toList)
+val (alldataLotShapeOneHot, featColsLotShapeOneHot) = addOneHotToCol(alldataAlleyOneHot, "LotShape", featColsAlleyOneHot.toList)
+val (alldataLandContourOneHot, featColsLandContourOneHot) = addOneHotToCol(alldataLotShapeOneHot, "LandContour", featColsLotShapeOneHot.toList)
+val (alldataUtilitiesOneHot, featColsUtilitiesOneHot) = addOneHotToCol(alldataLandContourOneHot, "Utilities", featColsLandContourOneHot.toList)
+val (alldataCondition1OneHot, featColsCondition1OneHot) = addOneHotToCol(alldataUtilitiesOneHot, "Condition1", featColsUtilitiesOneHot.toList)
+val (alldataCondition2OneHot, featColsCondition2OneHot) = addOneHotToCol(alldataCondition1OneHot, "Condition2", featColsCondition1OneHot.toList)
+val (alldataBldgTypeOneHot, featColsBldgTypeOneHot) = addOneHotToCol(alldataCondition2OneHot, "BldgType", featColsCondition2OneHot.toList)
+val (alldataHouseStyleOneHot, featColsHouseStyleOneHot) = addOneHotToCol(alldataBldgTypeOneHot, "HouseStyle", featColsBldgTypeOneHot.toList)
+val (alldataRoofMatlOneHot, featColsRoofMatlOneHot) = addOneHotToCol(alldataHouseStyleOneHot, "RoofMatl", featColsHouseStyleOneHot.toList)
+val (alldataExterior1stOneHot, featColsExterior1stOneHot) = addOneHotToCol(alldataRoofMatlOneHot, "Exterior1st", featColsRoofMatlOneHot.toList)
+val (alldataExterior2ndOneHot, featColsExterior2ndOneHot) = addOneHotToCol(alldataExterior1stOneHot, "Exterior2nd", featColsExterior1stOneHot.toList)
+val (alldataMasVnrTypeOneHot, featColsMasVnrTypeOneHot) = addOneHotToCol(alldataExterior2ndOneHot, "MasVnrType", featColsExterior2ndOneHot.toList)
+val (alldataExterQualOneHot, featColsExterQualOneHot) = addOneHotToCol(alldataMasVnrTypeOneHot, "ExterQual", featColsMasVnrTypeOneHot.toList)
+val (alldataExterCondOneHot, featColsExterCondOneHot) = addOneHotToCol(alldataExterQualOneHot, "ExterCond", featColsExterQualOneHot.toList)
+val (alldataFoundationOneHot, featColsFoundationOneHot) = addOneHotToCol(alldataExterCondOneHot, "Foundation", featColsExterCondOneHot.toList)
+val (alldataBsmtQualOneHot, featColsBsmtQualOneHot) = addOneHotToCol(alldataFoundationOneHot, "BsmtQual", featColsFoundationOneHot.toList)
+val (alldataBsmtCondOneHot, featColsBsmtCondOneHot) = addOneHotToCol(alldataBsmtQualOneHot, "BsmtCond", featColsBsmtQualOneHot.toList)
+val (alldataBsmtExposureOneHot, featColsBsmtExposureOneHot) = addOneHotToCol(alldataBsmtCondOneHot, "BsmtExposure", featColsBsmtCondOneHot.toList)
+val (alldataBsmtFinType1OneHot, featColsBsmtFinType1OneHot) = addOneHotToCol(alldataBsmtExposureOneHot, "BsmtFinType1", featColsBsmtExposureOneHot.toList)
+val (alldataHeatingOneHot, featColsHeatingOneHot) = addOneHotToCol(alldataBsmtFinType1OneHot, "Heating", featColsBsmtFinType1OneHot.toList)
+val (alldataHeatingQCOneHot, featColsHeatingQCOneHot) = addOneHotToCol(alldataHeatingOneHot, "HeatingQC", featColsHeatingOneHot.toList)
+val (alldataCentralAirOneHot, featColsCentralAirOneHot) = addOneHotToCol(alldataHeatingQCOneHot, "CentralAir", featColsHeatingQCOneHot.toList)
+val (alldataElectricalOneHot, featColsElectricalOneHot) = addOneHotToCol(alldataCentralAirOneHot, "Electrical", featColsCentralAirOneHot.toList)
+val (alldataFullBathOneHot, featColsFullBathOneHot) = addOneHotToCol(alldataElectricalOneHot, "FullBath", featColsElectricalOneHot.toList)
+val (alldataKitchenQualOneHot, featColsKitchenQualOneHot) = addOneHotToCol(alldataFullBathOneHot, "KitchenQual", featColsFullBathOneHot.toList)
+val (alldataGarageFinishOneHot, featColsGarageFinishOneHot) = addOneHotToCol(alldataKitchenQualOneHot, "GarageFinish", featColsKitchenQualOneHot.toList)
+val (alldataGarageCarsOneHot, featColsGarageCarsOneHot) = addOneHotToCol(alldataGarageFinishOneHot, "GarageCars", featColsGarageFinishOneHot.toList)
+val (alldataPavedDriveOneHot, featColsPavedDriveOneHot) = addOneHotToCol(alldataGarageCarsOneHot, "PavedDrive", featColsGarageCarsOneHot.toList)
+val (alldataSaleTypeOneHot, featColsSaleTypeOneHot) = addOneHotToCol(alldataPavedDriveOneHot, "SaleType", featColsPavedDriveOneHot.toList)
+val (alldataGrLivArea,featColGrLivArea) = createDoubleCol(alldataSaleTypeOneHot, "GrLivArea", featColsSaleTypeOneHot.toList)
+val (alldataGarageCars,featColGarageCars) = createDoubleCol(alldataGrLivArea, "GarageCars", featColGrLivArea.toList)
+val (alldataGarageArea,featColGarageArea) = createDoubleCol(alldataGarageCars, "GarageArea", featColGarageCars.toList)
+val (alldataTotalBsmtSF,featColTotalBsmtSF) = createDoubleCol(alldataGarageArea, "TotalBsmtSF", featColGarageArea.toList)
+val (alldata1stFlrSF,featCol1stFlrSF) = createDoubleCol(alldataTotalBsmtSF, "1stFlrSF", featColTotalBsmtSF.toList)
+val (alldataFullBath,featColFullBath) = createDoubleCol(alldata1stFlrSF, "FullBath", featCol1stFlrSF.toList)
+val (alldataTotRmsAbvGrd,featColTotRmsAbvGrd) = createDoubleCol(alldataFullBath, "TotRmsAbvGrd", featColFullBath.toList)
+
+val alldataSaleTypeOneHot = alldataTotRmsAbvGrd.withColumn("GarageCarsD",when(col("GarageCarsDouble").isNull,1.7666209732693625).otherwise(col("GarageCarsDouble"))).drop(col("GarageCarsDouble")).withColumnRenamed("GarageCarsD","GarageCarsDouble").withColumn("GarageAreaD",when(col("GarageAreaDouble").isNull,472.8745716244003).otherwise(col("GarageAreaDouble"))).drop(col("GarageAreaDouble")).withColumnRenamed("GarageAreaD","GarageAreaDouble").withColumn("TotalBsmtSFD",when(col("TotalBsmtSFDouble").isNull,1051.7775873886224).otherwise(col("TotalBsmtSFDouble"))).drop(col("TotalBsmtSFDouble")).withColumnRenamed("TotalBsmtSFD","TotalBsmtSFDouble")
+
+val featColsFinal = featColTotRmsAbvGrd.filter(_ != "HouseStyle_1.5Fin").filter(_ != "HouseStyle_2.5Fin").filter(_ != "HouseStyle_2.5Unf").filter(_ != "HouseStyle_1.5Unf")
+
+val trainWithOneHot = alldataSaleTypeOneHot.filter(!col("SalePrice").contains("test"))
+val testWithOneHot = alldataSaleTypeOneHot.filter(col("SalePrice").contains("test"))
+
+val assembler = new VectorAssembler().setInputCols(featColsFinal.toArray).setOutputCol("features")
+
+val trainWithFeatures = assembler.transform(trainWithOneHot)
+val lr1000 = new LinearRegression().setMaxIter(1000)
+val tM = lr1000.fit(trainWithFeatures.withColumn("label",col("SalePrice").cast(DoubleType)))
+val testWithFeatures = assembler.transform(testWithOneHot)
+tM.transform(testWithFeatures).drop("SalePrice").withColumnRenamed("prediction","SalePrice").select("Id","SalePrice").coalesce(1).write.option("header","true").csv("HousingLinReg08")
+
+
+
