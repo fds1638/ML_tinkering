@@ -1,5 +1,8 @@
-// Adding normalization, but my score went down to about 0.29. I don't understand why.
-// But I thought I would upload this nevertheless.
+// Adding normalization, and got my score down to 0.15011.
+// But the scores with normalization seemed identical to the scores without normalization, so maybe the
+// new best score was due to trying a regularization parameter I hadn't tried before.
+// I'm not sure why normalization didn't have almost any effect.
+
 // The new part is in the normalization of double-valued columns, in createDoubleCol.
 // The relevant lines are:
 // val colmin = df.agg(min(col(dfcol).cast(DoubleType))).take(1)(0)(0).asInstanceOf[Double]
@@ -83,8 +86,16 @@ val (alldata1stFlrSF,featCol1stFlrSF) = createDoubleCol(alldataTotalBsmtSF, "1st
 val (alldataFullBath,featColFullBath) = createDoubleCol(alldata1stFlrSF, "FullBath", featCol1stFlrSF.toList)
 val (alldataTotRmsAbvGrd,featColTotRmsAbvGrd) = createDoubleCol(alldataFullBath, "TotRmsAbvGrd", featColFullBath.toList)
 
-val alldataSaleTypeOneHot = alldataTotRmsAbvGrd.withColumn("GarageCarsD",when(col("GarageCarsDouble").isNull,1.7666209732693625).otherwise(col("GarageCarsDouble"))).drop(col("GarageCarsDouble")).withColumnRenamed("GarageCarsD","GarageCarsDouble").withColumn("GarageAreaD",when(col("GarageAreaDouble").isNull,472.8745716244003).otherwise(col("GarageAreaDouble"))).drop(col("GarageAreaDouble")).withColumnRenamed("GarageAreaD","GarageAreaDouble").withColumn("TotalBsmtSFD",when(col("TotalBsmtSFDouble").isNull,1051.7775873886224).otherwise(col("TotalBsmtSFDouble"))).drop(col("TotalBsmtSFDouble")).withColumnRenamed("TotalBsmtSFD","TotalBsmtSFDouble")
+// Fill in empty values.
+val alldataSaleTypeOneHot = alldataTotRmsAbvGrd
+.withColumn("GarageCarsD",when(col("GarageCarsDouble").isNull,0.35332419465386644).otherwise(col("GarageCarsDouble"))).drop(col("GarageCarsDouble"))
+.withColumnRenamed("GarageCarsD","GarageCarsDouble")
+.withColumn("GarageAreaD",when(col("GarageAreaDouble").isNull,0.31779205082284934).otherwise(col("GarageAreaDouble"))).drop(col("GarageAreaDouble"))
+.withColumnRenamed("GarageAreaD","GarageAreaDouble")
+.withColumn("TotalBsmtSFD",when(col("TotalBsmtSFDouble").isNull,0.17214035800141095).otherwise(col("TotalBsmtSFDouble"))).drop(col("TotalBsmtSFDouble"))
+.withColumnRenamed("TotalBsmtSFD","TotalBsmtSFDouble")
 
+// Create and train the model, then test it.
 val featColsFinal = featColTotRmsAbvGrd.filter(_ != "HouseStyle_1.5Fin").filter(_ != "HouseStyle_2.5Fin").filter(_ != "HouseStyle_2.5Unf").filter(_ != "HouseStyle_1.5Unf")
 
 val trainWithOneHot = alldataSaleTypeOneHot.filter(!col("SalePrice").contains("test"))
@@ -93,7 +104,7 @@ val testWithOneHot = alldataSaleTypeOneHot.filter(col("SalePrice").contains("tes
 val assembler = new VectorAssembler().setInputCols(featColsFinal.toArray).setOutputCol("features")
 
 val trainWithFeatures = assembler.transform(trainWithOneHot)
-val lr1000 = new LinearRegression().setMaxIter(1000).setRegParam(100000.0)
+val lr1000 = new LinearRegression().setMaxIter(1000).setRegParam(500000.0)
 val tM = lr1000.fit(trainWithFeatures.withColumn("label",col("SalePrice").cast(DoubleType)))
 val testWithFeatures = assembler.transform(testWithOneHot)
 tM.transform(testWithFeatures).drop("SalePrice").withColumnRenamed("prediction","SalePrice").select("Id","SalePrice").coalesce(1).write.option("header","true").csv("HousingLinReg08")
